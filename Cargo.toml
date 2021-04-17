@@ -16,5 +16,5 @@ sha2 = "0.9.3"
 subtle = "2.4.0"
 tracing = "0.1.25"
 x25519-dalek = "1.1.1"
-xoodyak = { path = "../rust-xoodyak" }
+xoodyak = { git = "https://github.com/dvc94ch/rust-xoodyak" }
 zeroize = "1.2.0"

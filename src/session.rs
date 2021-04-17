@@ -21,9 +21,10 @@ pub struct NoiseConfig {
 
 impl Clone for NoiseConfig {
     fn clone(&self) -> Self {
-        let keypair = self.keypair.as_ref().map(|keypair| {
-            Keypair::from_bytes(&keypair.to_bytes()).unwrap()
-        });
+        let keypair = self
+            .keypair
+            .as_ref()
+            .map(|keypair| Keypair::from_bytes(&keypair.to_bytes()).unwrap());
         Self {
             keypair,
             remote_public_key: self.remote_public_key,
@@ -151,7 +152,7 @@ impl Session for NoiseSession {
                 local: server,
                 remote: client,
             },
-        }
+        })
     }
 
     fn read_handshake(&mut self, handshake: &[u8]) -> Result<bool, TransportError> {
