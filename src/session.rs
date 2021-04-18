@@ -10,7 +10,7 @@ use ring::aead;
 use std::io::Cursor;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use xoodyak::Xoodyak;
+use xoodoo::Xoodyak;
 
 #[derive(Default)]
 pub struct NoiseConfig {
@@ -133,7 +133,7 @@ impl Session for NoiseSession {
         }
     }
 
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Self::PacketKey>> {
+    fn next_1rtt_keys(&mut self) -> KeyPair<Self::PacketKey> {
         if !self.is_handshaking() {
             self.xoodyak.ratchet();
         }
@@ -143,7 +143,7 @@ impl Session for NoiseSession {
         let mut server = [0; 32];
         self.xoodyak.squeeze_key(&mut server);
         let server = ChaCha8PacketKey::new(server);
-        Some(match self.side {
+        match self.side {
             Side::Client => KeyPair {
                 local: client,
                 remote: server,
@@ -152,7 +152,7 @@ impl Session for NoiseSession {
                 local: server,
                 remote: client,
             },
-        })
+        }
     }
 
     fn read_handshake(&mut self, handshake: &[u8]) -> Result<bool, TransportError> {
@@ -274,7 +274,7 @@ impl Session for NoiseSession {
                 None
             }
             (State::ZeroRtt, _) => {
-                let packet = self.next_1rtt_keys().unwrap();
+                let packet = self.next_1rtt_keys();
                 self.state = State::WaitHandshake;
                 Some(Keys {
                     header: HEADER_KEYPAIR,
@@ -300,7 +300,7 @@ impl Session for NoiseSession {
                 None
             }
             (State::OneRtt, _) => {
-                let packet = self.next_1rtt_keys().unwrap();
+                let packet = self.next_1rtt_keys();
                 self.state = State::Data;
                 Some(Keys {
                     header: HEADER_KEYPAIR,

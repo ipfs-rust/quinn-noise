@@ -9,12 +9,12 @@ bytes = "1.0.1"
 chacha20poly1305 = { version = "0.7.1", features = ["reduced-round"] }
 curve25519-dalek = "3.1.0"
 ed25519-dalek = "1.0.1"
-quinn-proto = { git = "https://github.com/quinn-rs/quinn", branch = "main", default-features = false, features = ["ring"] }
+quinn-proto = { version = "0.7.2", default-features = false, features = ["ring"] }
 rand_core = "0.5.1"
 ring = "0.16.20"
 sha2 = "0.9.3"
 subtle = "2.4.0"
 tracing = "0.1.25"
 x25519-dalek = "1.1.1"
-xoodyak = { git = "https://github.com/dvc94ch/rust-xoodyak" }
+xoodoo = "0.1.0"
 zeroize = "1.2.0"

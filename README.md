@@ -8,11 +8,11 @@ the IK handshake allows for 0-rtt encryption. Identity hiding isn't a concern in
 many p2p networks.
 
 ```
-IK[psk1]:
+IKpsk1:
     <- s
     ...
-    -> e, es, s, ss, [psk] || client transport parameters
-    <- e, ee, se           || server transport parameters
+    -> e, es, s, ss, psk  || client transport parameters || 0rtt-data
+    <- e, ee, se          || server transport parameters || 1rtt-data
 ```
 
 ## Identity and key exchange
@@ -37,11 +37,11 @@ p | Absorb(e)
   | key = Squeeze(32)
 Handshake:
   | Cyclist(key, {}, {})
-c | c = Encrypt(s)
+c | Encrypt(s)
   | Absorb(ss)
   | Absorb(psk)
-c | c = Encrypt(client_transport_parameters)
-t | t = Squeeze(16)
+c | Encrypt(client_transport_parameters)
+t | Squeeze(16)
   | initiator-0rtt-key = SqueezeKey(32)
   | responder-0rtt-key = SqueezeKey(32)
 ...
@@ -49,8 +49,8 @@ Handshake:
 c | Encrypt(e)
   | Absorb(ee)
   | Absorb(se)
-c | c = Encrypt(server_transport_parameters)
-t | t = Squeeze(16)
+c | Encrypt(server_transport_parameters)
+t | Squeeze(16)
   | initiator-1rtt-key = SqueezeKey(32)
   | responder-1rtt-key = SqueezeKey(32)
 ...
