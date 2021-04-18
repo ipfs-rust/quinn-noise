@@ -17,15 +17,15 @@ IKpsk1:
 
 ## Identity and key exchange
 
-Signing keys are used as identities in p2p networks. Because the IK handshake required prior
+Signing keys are used as identities in p2p networks. Because the IK handshake requires prior
 knowledge of the handshake key, the signing key is reused for the key exchange. An ed25519 key
 is converted to an x25519 key using the algorithm as implemented by libsodium.
 
 ## Handshake session
 
-Using xoodyak a finalist in the light weight crypto competition we use the following
-sequence of operations for deriving the 0rtt-key, 1rtt-key and next-1rtt-key. For fast
-authenticated encryption a chacha8poly1309 cipher is used.
+Using xoodyak (a finalist in the on-going NIST light weight crypto competition), the following
+sequence of operations are performed for deriving the 0rtt-key, 1rtt-key and next-1rtt-key. For
+fast authenticated encryption a chacha8poly1305 cipher is used.
 
 ```
 Initial:
@@ -58,3 +58,7 @@ Data:
   | initiator-next-1rtt-key = SqueezeKey(32)
   | responder-next-1rtt-key = SqueezeKey(32)
 ```
+
+## License
+
+MIT OR Apache-2.0

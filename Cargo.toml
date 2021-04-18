@@ -3,6 +3,9 @@ name = "quinn-noise"
 version = "0.1.0"
 authors = ["David Craven <david@craven.ch>"]
 edition = "2018"
+description = "quinn noise implementation."
+repository = "https://github.com/ipfs-rust/quinn-noise"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 bytes = "1.0.1"
