@@ -35,7 +35,6 @@ p | Absorb(e)
   | Absorb(s)
   | Absorb(es)
   | key = Squeeze(32)
-Handshake:
   | Cyclist(key, {}, {})
 c | Encrypt(s)
   | Absorb(ss)
@@ -54,6 +53,7 @@ t | Squeeze(16)
   | initiator-1rtt-key = SqueezeKey(32)
   | responder-1rtt-key = SqueezeKey(32)
 ...
+Data:
   | Ratchet()
   | initiator-next-1rtt-key = SqueezeKey(32)
   | responder-next-1rtt-key = SqueezeKey(32)

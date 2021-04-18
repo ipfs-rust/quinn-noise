@@ -99,9 +99,6 @@ pub struct NoiseSession {
 enum State {
     Initial,
     Handshake,
-    ZeroRtt,
-    WaitHandshake,
-    OneRtt,
     Data,
 }
 
@@ -155,14 +152,16 @@ impl Session for NoiseSession {
         }
     }
 
-    fn read_handshake(&mut self, handshake: &[u8]) -> Result<bool, TransportError> {
+    fn read_handshake(&mut self, handshake: &[u8]) -> Result<Option<Keys<Self>>, TransportError> {
+        tracing::trace!("read_handshake {:?} {:?}", self.state, self.side);
         match (self.state, self.side) {
             (State::Initial, Side::Server) => {
-                let (len, handshake) = handshake.split_at(1);
-                let (protocol_id, e) = handshake.split_at(len[0] as usize);
+                let (len, rest) = handshake.split_at(1);
+                let (protocol_id, rest) = rest.split_at(len[0] as usize);
                 if protocol_id != b"Noise_IKpsk1_Edx25519_ChaCha8Poly" {
                     return Err(connection_refused("unsupported protocol id"));
                 }
+                let (e, rest) = rest.split_at(32);
                 self.xoodyak.absorb(protocol_id);
                 self.xoodyak.absorb(e);
                 self.xoodyak.absorb(self.s.public.as_bytes());
@@ -174,11 +173,7 @@ impl Session for NoiseSession {
                 let mut key = [0; 32];
                 self.xoodyak.squeeze(&mut key);
                 self.xoodyak = Xoodyak::keyed(&key, None, None, None);
-                self.state = State::Handshake;
-                Ok(false)
-            }
-            (State::Handshake, Side::Server) => {
-                let (remote_s, rest) = handshake.split_at(32);
+                let (remote_s, rest) = rest.split_at(32);
                 let mut s = [0; 32];
                 self.xoodyak.decrypt(&remote_s, &mut s);
                 let s = PublicKey::from_bytes(&s)
@@ -199,10 +194,14 @@ impl Session for NoiseSession {
                     Side::Server,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                self.state = State::ZeroRtt;
-                Ok(false)
+                let packet = self.next_1rtt_keys();
+                self.state = State::Handshake;
+                Ok(Some(Keys {
+                    header: HEADER_KEYPAIR,
+                    packet,
+                }))
             }
-            (State::WaitHandshake, Side::Client) => {
+            (State::Handshake, Side::Client) => {
                 let (remote_e, rest) = handshake.split_at(32);
                 let mut e = [0; 32];
                 self.xoodyak.decrypt(&remote_e, &mut e);
@@ -225,8 +224,12 @@ impl Session for NoiseSession {
                     Side::Client,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                self.state = State::OneRtt;
-                Ok(false)
+                let packet = self.next_1rtt_keys();
+                self.state = State::Data;
+                Ok(Some(Keys {
+                    header: HEADER_KEYPAIR,
+                    packet,
+                }))
             }
             _ => Err(TransportError {
                 code: TransportErrorCode::CONNECTION_REFUSED,
@@ -237,6 +240,7 @@ impl Session for NoiseSession {
     }
 
     fn write_handshake(&mut self, handshake: &mut Vec<u8>) -> Option<Keys<Self>> {
+        tracing::trace!("write_handshake {:?} {:?}", self.state, self.side);
         match (self.state, self.side) {
             (State::Initial, Side::Client) => {
                 let protocol_id = b"Noise_IKpsk1_Edx25519_ChaCha8Poly";
@@ -253,9 +257,6 @@ impl Session for NoiseSession {
                 self.xoodyak.squeeze(&mut key);
                 self.xoodyak = Xoodyak::keyed(&key, None, None, None);
                 self.state = State::Handshake;
-                None
-            }
-            (State::Handshake, Side::Client) => {
                 let mut s = [0; 32];
                 self.xoodyak.encrypt(self.s.public.as_bytes(), &mut s);
                 handshake.extend_from_slice(&s);
@@ -270,24 +271,20 @@ impl Session for NoiseSession {
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                self.state = State::ZeroRtt;
-                None
-            }
-            (State::ZeroRtt, _) => {
                 let packet = self.next_1rtt_keys();
-                self.state = State::WaitHandshake;
+                self.state = State::Handshake;
                 Some(Keys {
                     header: HEADER_KEYPAIR,
                     packet,
                 })
             }
-            (State::WaitHandshake, Side::Server) => {
+            (State::Handshake, Side::Server) => {
                 let mut e = [0; 32];
                 self.xoodyak.encrypt(self.e.public.as_bytes(), &mut e);
                 handshake.extend_from_slice(&e);
                 let ee = self.e.diffie_hellman(&self.remote_e.unwrap());
                 self.xoodyak.absorb(&ee);
-                let se = self.s.diffie_hellman(&self.remote_s.unwrap());
+                let se = self.e.diffie_hellman(&self.remote_s.unwrap());
                 self.xoodyak.absorb(&se);
                 let mut transport_parameters = vec![0; self.transport_parameters.len()];
                 self.xoodyak
@@ -296,10 +293,6 @@ impl Session for NoiseSession {
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                self.state = State::OneRtt;
-                None
-            }
-            (State::OneRtt, _) => {
                 let packet = self.next_1rtt_keys();
                 self.state = State::Data;
                 Some(Keys {

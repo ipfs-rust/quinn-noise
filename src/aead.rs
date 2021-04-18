@@ -47,7 +47,9 @@ impl PacketKey for ChaCha8PacketKey {
         let tag = Tag::from_slice(tag);
         self.0
             .decrypt_in_place_detached(&nonce, header, content, tag)
-            .map_err(|_| CryptoError)
+            .map_err(|_| CryptoError)?;
+        payload.truncate(len);
+        Ok(())
     }
 
     fn tag_len(&self) -> usize {
