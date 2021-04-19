@@ -59,8 +59,6 @@ impl ServerConfig<NoiseSession> for Arc<NoiseConfig> {
 
 impl NoiseConfig {
     fn start_session(&self, side: Side, params: &TransportParameters) -> NoiseSession {
-        let mut transport_parameters = vec![];
-        params.write(&mut transport_parameters);
         let s = if let Some(keypair) = self.keypair.as_ref() {
             Keypair::from_bytes(&keypair.to_bytes()).unwrap()
         } else {
@@ -74,10 +72,11 @@ impl NoiseConfig {
             e,
             s,
             psk: self.psk.unwrap_or_default(),
-            transport_parameters,
+            transport_parameters: *params,
             remote_transport_parameters: None,
             remote_e: None,
             remote_s: self.remote_public_key,
+            zero_rtt_key: None,
         }
     }
 }
@@ -89,10 +88,11 @@ pub struct NoiseSession {
     e: Keypair,
     s: Keypair,
     psk: [u8; 32],
-    transport_parameters: Vec<u8>,
+    transport_parameters: TransportParameters,
     remote_transport_parameters: Option<TransportParameters>,
     remote_e: Option<PublicKey>,
     remote_s: Option<PublicKey>,
+    zero_rtt_key: Option<ChaCha8PacketKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,7 +130,7 @@ impl Session for NoiseSession {
         }
     }
 
-    fn next_1rtt_keys(&mut self) -> KeyPair<Self::PacketKey> {
+    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Self::PacketKey>> {
         if !self.is_handshaking() {
             self.xoodyak.ratchet();
         }
@@ -140,7 +140,7 @@ impl Session for NoiseSession {
         let mut server = [0; 32];
         self.xoodyak.squeeze_key(&mut server);
         let server = ChaCha8PacketKey::new(server);
-        match self.side {
+        let key = match self.side {
             Side::Client => KeyPair {
                 local: client,
                 remote: server,
@@ -149,10 +149,11 @@ impl Session for NoiseSession {
                 local: server,
                 remote: client,
             },
-        }
+        };
+        Some(key)
     }
 
-    fn read_handshake(&mut self, handshake: &[u8]) -> Result<Option<Keys<Self>>, TransportError> {
+    fn read_handshake(&mut self, handshake: &[u8]) -> Result<(bool, Option<Keys<Self>>), TransportError> {
         tracing::trace!("read_handshake {:?} {:?}", self.state, self.side);
         match (self.state, self.side) {
             (State::Initial, Side::Server) => {
@@ -194,12 +195,14 @@ impl Session for NoiseSession {
                     Side::Server,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Handshake;
-                Ok(Some(Keys {
+                self.zero_rtt_key = Some(packet.remote.clone());
+                let keys = Keys {
                     header: HEADER_KEYPAIR,
                     packet,
-                }))
+                };
+                Ok((true, Some(keys)))
             }
             (State::Handshake, Side::Client) => {
                 let (remote_e, rest) = handshake.split_at(32);
@@ -224,12 +227,14 @@ impl Session for NoiseSession {
                     Side::Client,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Data;
-                Ok(Some(Keys {
+                self.zero_rtt_key.take();
+                let keys = Keys {
                     header: HEADER_KEYPAIR,
                     packet,
-                }))
+                };
+                Ok((true, Some(keys)))
             }
             _ => Err(TransportError {
                 code: TransportErrorCode::CONNECTION_REFUSED,
@@ -264,15 +269,17 @@ impl Session for NoiseSession {
                 let ss = self.s.diffie_hellman(&s);
                 self.xoodyak.absorb(&ss);
                 self.xoodyak.absorb(&self.psk);
-                let mut transport_parameters = vec![0; self.transport_parameters.len()];
+                let mut transport_parameters = vec![];
+                self.transport_parameters.write(&mut transport_parameters);
                 self.xoodyak
-                    .encrypt(&self.transport_parameters, &mut transport_parameters);
+                    .encrypt_in_place(&mut transport_parameters);
                 handshake.extend_from_slice(&transport_parameters);
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Handshake;
+                self.zero_rtt_key = Some(packet.local.clone());
                 Some(Keys {
                     header: HEADER_KEYPAIR,
                     packet,
@@ -286,14 +293,15 @@ impl Session for NoiseSession {
                 self.xoodyak.absorb(&ee);
                 let se = self.e.diffie_hellman(&self.remote_s.unwrap());
                 self.xoodyak.absorb(&se);
-                let mut transport_parameters = vec![0; self.transport_parameters.len()];
+                let mut transport_parameters = vec![];
+                self.transport_parameters.write(&mut transport_parameters);
                 self.xoodyak
-                    .encrypt(&self.transport_parameters, &mut transport_parameters);
+                    .encrypt_in_place(&mut transport_parameters);
                 handshake.extend_from_slice(&transport_parameters);
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Data;
                 Some(Keys {
                     header: HEADER_KEYPAIR,
@@ -313,11 +321,15 @@ impl Session for NoiseSession {
     }
 
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
-        Ok(self.remote_transport_parameters)
+        if self.state == State::Handshake && self.side == Side::Client {
+            Ok(Some(self.transport_parameters))
+        } else {
+            Ok(self.remote_transport_parameters)
+        }
     }
 
     fn handshake_data(&self) -> Option<Self::HandshakeData> {
-        None
+        Some(())
     }
 
     fn export_keying_material(
@@ -334,11 +346,11 @@ impl Session for NoiseSession {
     }
 
     fn early_crypto(&self) -> Option<(Self::HeaderKey, Self::PacketKey)> {
-        None
+        Some((PlaintextHeaderKey, self.zero_rtt_key.clone().unwrap()))
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
-        None
+        Some(true)
     }
 
     fn retry_tag(orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {

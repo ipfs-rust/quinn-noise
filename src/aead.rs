@@ -10,6 +10,7 @@ pub const HEADER_KEYPAIR: KeyPair<PlaintextHeaderKey> = KeyPair {
     remote: PlaintextHeaderKey,
 };
 
+#[derive(Clone)]
 pub struct ChaCha8PacketKey(ChaCha8Poly1305);
 
 impl ChaCha8PacketKey {
