@@ -21,6 +21,9 @@ Signing keys are used as identities in p2p networks. Because the IK handshake re
 knowledge of the handshake key, the signing key is reused for the key exchange. An ed25519 key
 is converted to an x25519 key using the algorithm as implemented by libsodium.
 
+NOTE: while it is likely ok to reuse the key for singing and diffie hellman it is strongly advised
+not to reuse the key for other protocols like VRF or threshold signatures.
+
 ## Handshake session
 
 Using xoodyak (a finalist in the on-going NIST light weight crypto competition), the following
