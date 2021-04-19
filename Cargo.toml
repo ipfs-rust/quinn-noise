@@ -12,7 +12,7 @@ bytes = "1.0.1"
 chacha20poly1305 = { version = "0.7.1", features = ["reduced-round"] }
 curve25519-dalek = "3.1.0"
 ed25519-dalek = "1.0.1"
-quinn-proto = { version = "0.7.2", default-features = false, features = ["ring"] }
+quinn-proto = { git = "https://github.com/dvc94ch/quinn", branch = "read-handshake-returns-keys", default-features = false, features = ["ring"] }
 rand_core = "0.5.1"
 ring = "0.16.20"
 sha2 = "0.9.3"
