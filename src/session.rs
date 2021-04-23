@@ -98,7 +98,9 @@ pub struct NoiseSession {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
     Initial,
+    ZeroRtt,
     Handshake,
+    OneRtt,
     Data,
 }
 
@@ -130,7 +132,7 @@ impl Session for NoiseSession {
         }
     }
 
-    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Self::PacketKey>> {
+    fn next_1rtt_keys(&mut self) -> KeyPair<Self::PacketKey> {
         if !self.is_handshaking() {
             self.xoodyak.ratchet();
         }
@@ -150,10 +152,10 @@ impl Session for NoiseSession {
                 remote: client,
             },
         };
-        Some(key)
+        key
     }
 
-    fn read_handshake(&mut self, handshake: &[u8]) -> Result<(bool, Option<Keys<Self>>), TransportError> {
+    fn read_handshake(&mut self, handshake: &[u8]) -> Result<bool, TransportError> {
         tracing::trace!("read_handshake {:?} {:?}", self.state, self.side);
         match (self.state, self.side) {
             (State::Initial, Side::Server) => {
@@ -195,14 +197,8 @@ impl Session for NoiseSession {
                     Side::Server,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                let packet = self.next_1rtt_keys().unwrap();
-                self.state = State::Handshake;
-                self.zero_rtt_key = Some(packet.remote.clone());
-                let keys = Keys {
-                    header: HEADER_KEYPAIR,
-                    packet,
-                };
-                Ok((true, Some(keys)))
+                self.state = State::ZeroRtt;
+                Ok(true)
             }
             (State::Handshake, Side::Client) => {
                 let (remote_e, rest) = handshake.split_at(32);
@@ -227,14 +223,8 @@ impl Session for NoiseSession {
                     Side::Client,
                     &mut Cursor::new(&mut transport_parameters),
                 )?);
-                let packet = self.next_1rtt_keys().unwrap();
-                self.state = State::Data;
-                self.zero_rtt_key.take();
-                let keys = Keys {
-                    header: HEADER_KEYPAIR,
-                    packet,
-                };
-                Ok((true, Some(keys)))
+                self.state = State::OneRtt;
+                Ok(true)
             }
             _ => Err(TransportError {
                 code: TransportErrorCode::CONNECTION_REFUSED,
@@ -277,7 +267,11 @@ impl Session for NoiseSession {
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                let packet = self.next_1rtt_keys().unwrap();
+                self.state = State::ZeroRtt;
+                None
+            }
+            (State::ZeroRtt, _) => {
+                let packet = self.next_1rtt_keys();
                 self.state = State::Handshake;
                 self.zero_rtt_key = Some(packet.local.clone());
                 Some(Keys {
@@ -301,7 +295,15 @@ impl Session for NoiseSession {
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
-                let packet = self.next_1rtt_keys().unwrap();
+                let packet = self.next_1rtt_keys();
+                self.state = State::Data;
+                Some(Keys {
+                    header: HEADER_KEYPAIR,
+                    packet,
+                })
+            }
+            (State::OneRtt, _) => {
+                let packet = self.next_1rtt_keys();
                 self.state = State::Data;
                 Some(Keys {
                     header: HEADER_KEYPAIR,
