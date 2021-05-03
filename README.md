@@ -62,6 +62,13 @@ Data:
   | responder-next-1rtt-key = SqueezeKey(32)
 ```
 
+## QUIC version
+
+Reserved versions for `quinn-noise` are `0xf0f0f2f[0-f]` [0]. Currently only `0xf0f0f2f0` is a
+valid `quinn-noise` version.
+
+- [0] https://github.com/quicwg/base-drafts/wiki/QUIC-Versions
+
 ## License
 
 MIT OR Apache-2.0
