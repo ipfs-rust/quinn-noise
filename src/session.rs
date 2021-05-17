@@ -1,5 +1,6 @@
 use crate::aead::{ChaCha8PacketKey, PlaintextHeaderKey, HEADER_KEYPAIR};
 use crate::dh::DiffieHellman;
+use crate::keylog::KeyLog;
 use ed25519_dalek::{Keypair, PublicKey};
 use quinn_proto::crypto::{
     ClientConfig, ExportKeyingMaterialError, KeyPair, Keys, ServerConfig, Session,
@@ -12,11 +13,17 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use xoodoo::Xoodyak;
 
+/// Noise configuration struct.
 #[derive(Default)]
 pub struct NoiseConfig {
+    /// Keypair to use. If none is provided one will be generated.
     pub keypair: Option<Keypair>,
+    /// The remote public key. This needs to be set.
     pub remote_public_key: Option<PublicKey>,
+    /// Optional private shared key usable as a password for private networks.
     pub psk: Option<[u8; 32]>,
+    /// Enables keylogging for debugging purposes to the path provided by `SSLKEYLOGFILE`.
+    pub keylogger: Option<Arc<dyn KeyLog>>,
 }
 
 impl Clone for NoiseConfig {
@@ -29,6 +36,7 @@ impl Clone for NoiseConfig {
             keypair,
             remote_public_key: self.remote_public_key,
             psk: self.psk,
+            keylogger: self.keylogger.clone(),
         }
     }
 }
@@ -59,12 +67,13 @@ impl ServerConfig<NoiseSession> for Arc<NoiseConfig> {
 
 impl NoiseConfig {
     fn start_session(&self, side: Side, params: &TransportParameters) -> NoiseSession {
+        let mut rng = rand_core::OsRng {};
         let s = if let Some(keypair) = self.keypair.as_ref() {
             Keypair::from_bytes(&keypair.to_bytes()).unwrap()
         } else {
-            Keypair::generate(&mut rand_core::OsRng {})
+            Keypair::generate(&mut rng)
         };
-        let e = Keypair::generate(&mut rand_core::OsRng {});
+        let e = Keypair::generate(&mut rng);
         NoiseSession {
             xoodyak: Xoodyak::hash(),
             state: State::Initial,
@@ -77,6 +86,7 @@ impl NoiseConfig {
             remote_e: None,
             remote_s: self.remote_public_key,
             zero_rtt_key: None,
+            keylogger: self.keylogger.clone(),
         }
     }
 }
@@ -93,6 +103,16 @@ pub struct NoiseSession {
     remote_e: Option<PublicKey>,
     remote_s: Option<PublicKey>,
     zero_rtt_key: Option<ChaCha8PacketKey>,
+    keylogger: Option<Arc<dyn KeyLog>>,
+}
+
+impl NoiseSession {
+    fn conn_id(&self) -> Option<&[u8; 32]> {
+        match self.side {
+            Side::Client => Some(self.e.public.as_bytes()),
+            Side::Server => Some(self.remote_e.as_ref()?.as_bytes()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -138,9 +158,13 @@ impl Session for NoiseSession {
         }
         let mut client = [0; 32];
         self.xoodyak.squeeze_key(&mut client);
-        let client = ChaCha8PacketKey::new(client);
         let mut server = [0; 32];
         self.xoodyak.squeeze_key(&mut server);
+        if let Some(keylogger) = self.keylogger.as_ref() {
+            keylogger.log("CLIENT_KEY", self.conn_id().unwrap(), &client[..]);
+            keylogger.log("SERVER_KEY", self.conn_id().unwrap(), &server[..]);
+        }
+        let client = ChaCha8PacketKey::new(client);
         let server = ChaCha8PacketKey::new(server);
         let key = match self.side {
             Side::Client => KeyPair {
@@ -261,8 +285,7 @@ impl Session for NoiseSession {
                 self.xoodyak.absorb(&self.psk);
                 let mut transport_parameters = vec![];
                 self.transport_parameters.write(&mut transport_parameters);
-                self.xoodyak
-                    .encrypt_in_place(&mut transport_parameters);
+                self.xoodyak.encrypt_in_place(&mut transport_parameters);
                 handshake.extend_from_slice(&transport_parameters);
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
@@ -289,8 +312,7 @@ impl Session for NoiseSession {
                 self.xoodyak.absorb(&se);
                 let mut transport_parameters = vec![];
                 self.transport_parameters.write(&mut transport_parameters);
-                self.xoodyak
-                    .encrypt_in_place(&mut transport_parameters);
+                self.xoodyak.encrypt_in_place(&mut transport_parameters);
                 handshake.extend_from_slice(&transport_parameters);
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);

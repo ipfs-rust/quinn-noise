@@ -1,7 +1,10 @@
 mod aead;
 mod dh;
+mod keylog;
 mod session;
 
+pub use crate::aead::ChaCha8PacketKey;
+pub use crate::keylog::{KeyLog, KeyLogFile};
 pub use crate::session::{NoiseConfig, NoiseSession};
 pub use ed25519_dalek::{Keypair, PublicKey};
 
