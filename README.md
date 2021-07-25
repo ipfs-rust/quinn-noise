@@ -32,9 +32,20 @@ fast authenticated encryption a chacha8poly1305 cipher is used.
 
 ## Session
 
-The initial packet contains the ephemeral client public key, the encrypted client static public key
-and the encrypted client transport parameters. After the initial packet 0-rtt packets can be sent
-using the `initiator-0rtt-key` without having to wait for a response from the server.
+The session transcript is initialized with the protocol identifier. The client ephemeral and server
+static public keys, and the es dh are absorbed into the session transcript. From this session transcript
+a session identifier is extracted which is used to initialize a keyed session transcript as per the
+xoodyak paper section 3.3 authenticated encryption with a common secret. The encrypted client static
+public key, the ss dh and the psk which defaults to [0; 32] if none was provided are added to the
+session transcript. Then the encrypted ALPN string used to identify the application protocol and the
+encrypted client transport parameters as defined by the quic spec are added to the transcript. Common
+ALPN strings are `h3` for web or `libp2p` for libp2p applications. Finally an authentication tag for
+the crypto frame and 0-rtt keys are extracted.
+
+The initial packet's crypto frame contains the protocol identifier, the client ephemeral public
+key, the encrypted client static public key, the encrypted ALPN identifier, the encrypted client
+transport parameters and an authentication tag. After the initial packet 0-rtt packets can be sent
+using the extracted 0-rtt key without having to wait for a response from the server.
 
 ```
 Initial:
@@ -48,6 +59,7 @@ p | Absorb(e)
 c | Encrypt(s)
   | Absorb(ss)
   | Absorb(psk)
+c | Encrypt(alpn)
 c | Encrypt(client_transport_parameters)
 t | Squeeze(16)
   | initiator-0rtt-key = SqueezeKey(32)
@@ -70,7 +82,7 @@ t | Squeeze(16)
 ```
 
 During the transport session the 1-rtt keys might need to be rotated. This happens when approaching
-`u64::MAX` sent packets or if requested by the other party. See the quic spec for details.
+`u64::MAX` sent packets or if forced by the connection. See the quic spec for details.
 
 ```
 Key rotation:
