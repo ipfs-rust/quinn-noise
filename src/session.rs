@@ -13,35 +13,71 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use xoodoo::Xoodyak;
 
+pub struct NoiseClientConfig {
+    /// Keypair to use.
+    pub keypair: Keypair,
+    /// Optional private shared key usable as a password for private networks.
+    pub psk: Option<[u8; 32]>,
+    /// Enables keylogging for debugging purposes to the path provided by `SSLKEYLOGFILE`.
+    pub keylogger: Option<Arc<dyn KeyLog>>,
+    /// The remote public key. This needs to be set.
+    pub remote_public_key: PublicKey,
+    /// ALPN string to use.
+    pub alpn: Vec<u8>,
+}
+
+impl From<NoiseClientConfig> for NoiseConfig {
+    fn from(config: NoiseClientConfig) -> Self {
+        Self {
+            keypair: Some(config.keypair),
+            psk: config.psk,
+            keylogger: config.keylogger,
+            remote_public_key: Some(config.remote_public_key),
+            alpn: Some(config.alpn),
+            supported_protocols: None,
+        }
+    }
+}
+
+pub struct NoiseServerConfig {
+    /// Keypair to use.
+    pub keypair: Keypair,
+    /// Optional private shared key usable as a password for private networks.
+    pub psk: Option<[u8; 32]>,
+    /// Enables keylogging for debugging purposes to the path provided by `SSLKEYLOGFILE`.
+    pub keylogger: Option<Arc<dyn KeyLog>>,
+    /// Supported ALPN identifiers.
+    pub supported_protocols: Vec<Vec<u8>>,
+}
+
+impl From<NoiseServerConfig> for NoiseConfig {
+    fn from(config: NoiseServerConfig) -> Self {
+        Self {
+            keypair: Some(config.keypair),
+            psk: config.psk,
+            keylogger: config.keylogger,
+            remote_public_key: None,
+            alpn: None,
+            supported_protocols: Some(config.supported_protocols),
+        }
+    }
+}
+
 /// Noise configuration struct.
 #[derive(Default)]
 pub struct NoiseConfig {
-    /// Keypair to use. If none is provided one will be generated.
-    pub keypair: Option<Keypair>,
-    /// The remote public key. This needs to be set.
-    pub remote_public_key: Option<PublicKey>,
+    /// Keypair to use.
+    keypair: Option<Keypair>,
     /// Optional private shared key usable as a password for private networks.
-    pub psk: Option<[u8; 32]>,
-    /// ALPN string to use.
-    pub alpn: Vec<u8>,
+    psk: Option<[u8; 32]>,
     /// Enables keylogging for debugging purposes to the path provided by `SSLKEYLOGFILE`.
-    pub keylogger: Option<Arc<dyn KeyLog>>,
-}
-
-impl Clone for NoiseConfig {
-    fn clone(&self) -> Self {
-        let keypair = self
-            .keypair
-            .as_ref()
-            .map(|keypair| Keypair::from_bytes(&keypair.to_bytes()).unwrap());
-        Self {
-            keypair,
-            remote_public_key: self.remote_public_key,
-            psk: self.psk,
-            alpn: self.alpn.clone(),
-            keylogger: self.keylogger.clone(),
-        }
-    }
+    keylogger: Option<Arc<dyn KeyLog>>,
+    /// The remote public key. This needs to be set.
+    remote_public_key: Option<PublicKey>,
+    /// ALPN string to use.
+    alpn: Option<Vec<u8>>,
+    /// Supported ALPN identifiers.
+    supported_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl ClientConfig<NoiseSession> for NoiseConfig {
@@ -85,12 +121,30 @@ impl NoiseConfig {
             s,
             psk: self.psk.unwrap_or_default(),
             alpn: self.alpn.clone(),
+            supported_protocols: self.supported_protocols.clone(),
             transport_parameters: *params,
             remote_transport_parameters: None,
             remote_e: None,
             remote_s: self.remote_public_key,
             zero_rtt_key: None,
             keylogger: self.keylogger.clone(),
+        }
+    }
+}
+
+impl Clone for NoiseConfig {
+    fn clone(&self) -> Self {
+        let keypair = self
+            .keypair
+            .as_ref()
+            .map(|keypair| Keypair::from_bytes(&keypair.to_bytes()).unwrap());
+        Self {
+            keypair,
+            psk: self.psk,
+            keylogger: self.keylogger.clone(),
+            remote_public_key: self.remote_public_key,
+            alpn: self.alpn.clone(),
+            supported_protocols: self.supported_protocols.clone(),
         }
     }
 }
@@ -102,7 +156,8 @@ pub struct NoiseSession {
     e: Keypair,
     s: Keypair,
     psk: [u8; 32],
-    alpn: Vec<u8>,
+    alpn: Option<Vec<u8>>,
+    supported_protocols: Option<Vec<Vec<u8>>>,
     transport_parameters: TransportParameters,
     remote_transport_parameters: Option<TransportParameters>,
     remote_e: Option<PublicKey>,
@@ -138,7 +193,7 @@ fn connection_refused(reason: &str) -> TransportError {
 }
 
 impl Session for NoiseSession {
-    type HandshakeData = ();
+    type HandshakeData = Vec<u8>;
     type Identity = PublicKey;
     type ClientConfig = NoiseConfig;
     type ServerConfig = Arc<NoiseConfig>;
@@ -247,9 +302,17 @@ impl Session for NoiseSession {
                 let (alpn, rest) = rest.split_at(len);
                 let mut alpn = alpn.to_vec();
                 self.xoodyak.decrypt_in_place(&mut alpn);
-                if alpn != self.alpn {
+                let is_supported = self
+                    .supported_protocols
+                    .as_ref()
+                    .expect("invalid config")
+                    .into_iter()
+                    .find(|proto| proto.as_slice() == alpn)
+                    .is_some();
+                if !is_supported {
                     return Err(connection_refused("unsupported alpn"));
                 }
+                self.alpn = Some(alpn);
                 // transport parameters
                 if rest.len() < 16 {
                     return Err(connection_refused("invalid crypto frame"));
@@ -348,9 +411,10 @@ impl Session for NoiseSession {
                 // psk
                 self.xoodyak.absorb(&self.psk);
                 // alpn
-                handshake.extend_from_slice(&[self.alpn.len() as u8]);
+                let alpn = self.alpn.as_ref().expect("invalid config");
+                handshake.extend_from_slice(&[alpn.len() as u8]);
                 let pos = handshake.len();
-                handshake.extend_from_slice(&self.alpn);
+                handshake.extend_from_slice(alpn);
                 self.xoodyak.encrypt_in_place(&mut handshake[pos..]);
                 // transport parameters
                 let mut transport_parameters = vec![];
@@ -431,7 +495,7 @@ impl Session for NoiseSession {
     }
 
     fn handshake_data(&self) -> Option<Self::HandshakeData> {
-        Some(())
+        self.alpn.clone()
     }
 
     fn export_keying_material(
