@@ -318,7 +318,7 @@ impl Session for NoiseSession {
                 }
                 let (remote_s, rest) = rest.split_at(32);
                 let mut s = [0; 32];
-                self.xoodyak.decrypt(&remote_s, &mut s);
+                self.xoodyak.decrypt(remote_s, &mut s);
                 let s = PublicKey::from_bytes(&s)
                     .map_err(|_| connection_refused("invalid static public key"))?;
                 self.remote_s = Some(s);
@@ -343,9 +343,8 @@ impl Session for NoiseSession {
                     .supported_protocols
                     .as_ref()
                     .expect("invalid config")
-                    .into_iter()
-                    .find(|proto| proto.as_slice() == alpn)
-                    .is_some();
+                    .iter()
+                    .any(|proto| proto.as_slice() == alpn);
                 if !is_supported {
                     return Err(connection_refused("unsupported alpn"));
                 }
@@ -356,11 +355,11 @@ impl Session for NoiseSession {
                 }
                 let (params, auth) = rest.split_at(rest.len() - 16);
                 let mut transport_parameters = vec![0; params.len()];
-                self.xoodyak.decrypt(&params, &mut transport_parameters);
+                self.xoodyak.decrypt(params, &mut transport_parameters);
                 // check tag
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
-                if !bool::from(tag.ct_eq(&auth)) {
+                if !bool::from(tag.ct_eq(auth)) {
                     return Err(connection_refused("invalid authentication tag"));
                 }
                 self.remote_transport_parameters = Some(TransportParameters::read(
@@ -377,7 +376,7 @@ impl Session for NoiseSession {
                 }
                 let (remote_e, rest) = handshake.split_at(32);
                 let mut e = [0; 32];
-                self.xoodyak.decrypt(&remote_e, &mut e);
+                self.xoodyak.decrypt(remote_e, &mut e);
                 let e = PublicKey::from_bytes(&e)
                     .map_err(|_| connection_refused("invalid ephemeral public key"))?;
                 self.remote_e = Some(e);
@@ -393,11 +392,11 @@ impl Session for NoiseSession {
                 }
                 let (params, auth) = rest.split_at(rest.len() - 16);
                 let mut transport_parameters = vec![0; params.len()];
-                self.xoodyak.decrypt(&params, &mut transport_parameters);
+                self.xoodyak.decrypt(params, &mut transport_parameters);
                 // check tag
                 let mut tag = [0; 16];
                 self.xoodyak.squeeze(&mut tag);
-                if !bool::from(tag.ct_eq(&auth)) {
+                if !bool::from(tag.ct_eq(auth)) {
                     return Err(connection_refused("invalid authentication tag"));
                 }
                 self.remote_transport_parameters = Some(TransportParameters::read(

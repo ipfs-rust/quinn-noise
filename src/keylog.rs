@@ -60,6 +60,12 @@ impl KeyLogFile {
     }
 }
 
+impl Default for KeyLogFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeyLog for KeyLogFile {
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
         match self
