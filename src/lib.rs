@@ -5,7 +5,7 @@ mod session;
 
 pub use crate::aead::ChaCha8PacketKey;
 pub use crate::keylog::{KeyLog, KeyLogFile};
-pub use crate::session::{NoiseConfig, NoiseClientConfig, NoiseServerConfig, NoiseSession};
+pub use crate::session::{NoiseClientConfig, NoiseConfig, NoiseServerConfig, NoiseSession};
 pub use ed25519_dalek::{Keypair, PublicKey, SecretKey};
 
 // https://github.com/quicwg/base-drafts/wiki/QUIC-Versions

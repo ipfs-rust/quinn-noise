@@ -1,13 +1,15 @@
-use crate::aead::{ChaCha8PacketKey, PlaintextHeaderKey, HEADER_KEYPAIR};
+use crate::aead::{header_keypair, ChaCha8PacketKey, PlaintextHeaderKey};
 use crate::dh::DiffieHellman;
 use crate::keylog::KeyLog;
 use ed25519_dalek::{Keypair, PublicKey};
 use quinn_proto::crypto::{
-    ClientConfig, ExportKeyingMaterialError, KeyPair, Keys, ServerConfig, Session,
+    ClientConfig, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, PacketKey, ServerConfig,
+    Session,
 };
 use quinn_proto::transport_parameters::TransportParameters;
 use quinn_proto::{ConnectError, ConnectionId, Side, TransportError, TransportErrorCode};
 use ring::aead;
+use std::any::Any;
 use std::io::Cursor;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -80,27 +82,62 @@ pub struct NoiseConfig {
     supported_protocols: Option<Vec<Vec<u8>>>,
 }
 
-impl ClientConfig<NoiseSession> for NoiseConfig {
-    fn new() -> Self {
-        Default::default()
-    }
-
+impl ClientConfig for NoiseConfig {
     fn start_session(
-        &self,
-        _: &str,
+        self: Arc<Self>,
+        version: u32,
+        server_name: &str,
         params: &TransportParameters,
-    ) -> Result<NoiseSession, ConnectError> {
-        Ok(NoiseConfig::start_session(self, Side::Client, params))
+    ) -> Result<Box<dyn Session>, ConnectError> {
+        Ok(Box::new(NoiseConfig::start_session(
+            &self,
+            Side::Client,
+            params,
+        )))
     }
 }
 
-impl ServerConfig<NoiseSession> for Arc<NoiseConfig> {
-    fn new() -> Self {
-        Default::default()
+impl ServerConfig for NoiseConfig {
+    fn start_session(
+        self: Arc<Self>,
+        version: u32,
+        params: &TransportParameters,
+    ) -> Box<dyn Session> {
+        Box::new(NoiseConfig::start_session(&self, Side::Server, params))
     }
 
-    fn start_session(&self, params: &TransportParameters) -> NoiseSession {
-        NoiseConfig::start_session(self, Side::Server, params)
+    fn initial_keys(
+        &self,
+        version: u32,
+        dst_cid: &ConnectionId,
+        side: Side,
+    ) -> Result<Keys, quinn_proto::crypto::UnsupportedVersion> {
+        Ok(Keys {
+            header: header_keypair(),
+            packet: KeyPair {
+                local: Box::new(ChaCha8PacketKey::new([0; 32])),
+                remote: Box::new(ChaCha8PacketKey::new([0; 32])),
+            },
+        })
+    }
+
+    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+        let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
+        pseudo_packet.push(orig_dst_cid.len() as u8);
+        pseudo_packet.extend_from_slice(orig_dst_cid);
+        pseudo_packet.extend_from_slice(packet);
+
+        let nonce = aead::Nonce::assume_unique_for_key(RETRY_INTEGRITY_NONCE);
+        let key = aead::LessSafeKey::new(
+            aead::UnboundKey::new(&aead::AES_128_GCM, &RETRY_INTEGRITY_KEY).unwrap(),
+        );
+
+        let tag = key
+            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
+            .unwrap();
+        let mut result = [0; 16];
+        result.copy_from_slice(tag.as_ref());
+        result
     }
 }
 
@@ -192,27 +229,8 @@ fn connection_refused(reason: &str) -> TransportError {
     }
 }
 
-impl Session for NoiseSession {
-    type HandshakeData = Vec<u8>;
-    type Identity = PublicKey;
-    type ClientConfig = NoiseConfig;
-    type ServerConfig = Arc<NoiseConfig>;
-    type HmacKey = ring::hmac::Key;
-    type HandshakeTokenKey = ring::hkdf::Prk;
-    type HeaderKey = PlaintextHeaderKey;
-    type PacketKey = ChaCha8PacketKey;
-
-    fn initial_keys(_: &ConnectionId, _: Side) -> Keys<Self> {
-        Keys {
-            header: HEADER_KEYPAIR,
-            packet: KeyPair {
-                local: ChaCha8PacketKey::new([0; 32]),
-                remote: ChaCha8PacketKey::new([0; 32]),
-            },
-        }
-    }
-
-    fn next_1rtt_keys(&mut self) -> KeyPair<Self::PacketKey> {
+impl NoiseSession {
+    fn next_1rtt_keys0(&mut self) -> KeyPair<ChaCha8PacketKey> {
         if !self.is_handshaking() {
             self.xoodyak.ratchet();
         }
@@ -226,7 +244,7 @@ impl Session for NoiseSession {
         }
         let client = ChaCha8PacketKey::new(client);
         let server = ChaCha8PacketKey::new(server);
-        let key = match self.side {
+        match self.side {
             Side::Client => KeyPair {
                 local: client,
                 remote: server,
@@ -235,8 +253,27 @@ impl Session for NoiseSession {
                 local: server,
                 remote: client,
             },
-        };
-        key
+        }
+    }
+}
+
+impl Session for NoiseSession {
+    fn initial_keys(&self, _: &ConnectionId, _: Side) -> Keys {
+        Keys {
+            header: header_keypair(),
+            packet: KeyPair {
+                local: Box::new(ChaCha8PacketKey::new([0; 32])),
+                remote: Box::new(ChaCha8PacketKey::new([0; 32])),
+            },
+        }
+    }
+
+    fn next_1rtt_keys(&mut self) -> Option<KeyPair<Box<dyn PacketKey>>> {
+        let key = self.next_1rtt_keys0();
+        Some(KeyPair {
+            local: Box::new(key.local),
+            remote: Box::new(key.remote),
+        })
     }
 
     fn read_handshake(&mut self, handshake: &[u8]) -> Result<bool, TransportError> {
@@ -378,7 +415,7 @@ impl Session for NoiseSession {
         }
     }
 
-    fn write_handshake(&mut self, handshake: &mut Vec<u8>) -> Option<Keys<Self>> {
+    fn write_handshake(&mut self, handshake: &mut Vec<u8>) -> Option<Keys> {
         tracing::trace!("write_handshake {:?} {:?}", self.state, self.side);
         match (self.state, self.side) {
             (State::Initial, Side::Client) => {
@@ -430,12 +467,15 @@ impl Session for NoiseSession {
                 None
             }
             (State::ZeroRtt, _) => {
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys0();
                 self.state = State::Handshake;
                 self.zero_rtt_key = Some(packet.local.clone());
                 Some(Keys {
-                    header: HEADER_KEYPAIR,
-                    packet,
+                    header: header_keypair(),
+                    packet: KeyPair {
+                        local: Box::new(packet.local),
+                        remote: Box::new(packet.remote),
+                    },
                 })
             }
             (State::Handshake, Side::Server) => {
@@ -459,18 +499,18 @@ impl Session for NoiseSession {
                 self.xoodyak.squeeze(&mut tag);
                 handshake.extend_from_slice(&tag);
                 // 1-rtt keys
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Data;
                 Some(Keys {
-                    header: HEADER_KEYPAIR,
+                    header: header_keypair(),
                     packet,
                 })
             }
             (State::OneRtt, _) => {
-                let packet = self.next_1rtt_keys();
+                let packet = self.next_1rtt_keys().unwrap();
                 self.state = State::Data;
                 Some(Keys {
-                    header: HEADER_KEYPAIR,
+                    header: header_keypair(),
                     packet,
                 })
             }
@@ -482,8 +522,8 @@ impl Session for NoiseSession {
         self.state != State::Data
     }
 
-    fn peer_identity(&self) -> Option<Self::Identity> {
-        self.remote_s
+    fn peer_identity(&self) -> Option<Box<dyn Any>> {
+        Some(Box::new(self.remote_s?))
     }
 
     fn transport_parameters(&self) -> Result<Option<TransportParameters>, TransportError> {
@@ -494,8 +534,8 @@ impl Session for NoiseSession {
         }
     }
 
-    fn handshake_data(&self) -> Option<Self::HandshakeData> {
-        self.alpn.clone()
+    fn handshake_data(&self) -> Option<Box<dyn Any>> {
+        Some(Box::new(self.alpn.clone()?))
     }
 
     fn export_keying_material(
@@ -511,34 +551,18 @@ impl Session for NoiseSession {
         Ok(())
     }
 
-    fn early_crypto(&self) -> Option<(Self::HeaderKey, Self::PacketKey)> {
-        Some((PlaintextHeaderKey, self.zero_rtt_key.clone().unwrap()))
+    fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn PacketKey>)> {
+        Some((
+            Box::new(PlaintextHeaderKey),
+            Box::new(self.zero_rtt_key.clone()?),
+        ))
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
         Some(true)
     }
 
-    fn retry_tag(orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
-        let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
-        pseudo_packet.push(orig_dst_cid.len() as u8);
-        pseudo_packet.extend_from_slice(orig_dst_cid);
-        pseudo_packet.extend_from_slice(packet);
-
-        let nonce = aead::Nonce::assume_unique_for_key(RETRY_INTEGRITY_NONCE);
-        let key = aead::LessSafeKey::new(
-            aead::UnboundKey::new(&aead::AES_128_GCM, &RETRY_INTEGRITY_KEY).unwrap(),
-        );
-
-        let tag = key
-            .seal_in_place_separate_tag(nonce, aead::Aad::from(pseudo_packet), &mut [])
-            .unwrap();
-        let mut result = [0; 16];
-        result.copy_from_slice(tag.as_ref());
-        result
-    }
-
-    fn is_valid_retry(orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
+    fn is_valid_retry(&self, orig_dst_cid: &ConnectionId, header: &[u8], payload: &[u8]) -> bool {
         let tag_start = match payload.len().checked_sub(16) {
             Some(x) => x,
             None => return false,
