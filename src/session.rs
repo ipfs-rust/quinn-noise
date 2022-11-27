@@ -85,8 +85,8 @@ pub struct NoiseConfig {
 impl ClientConfig for NoiseConfig {
     fn start_session(
         self: Arc<Self>,
-        version: u32,
-        server_name: &str,
+        _version: u32,
+        _server_name: &str,
         params: &TransportParameters,
     ) -> Result<Box<dyn Session>, ConnectError> {
         Ok(Box::new(NoiseConfig::start_session(
@@ -100,7 +100,7 @@ impl ClientConfig for NoiseConfig {
 impl ServerConfig for NoiseConfig {
     fn start_session(
         self: Arc<Self>,
-        version: u32,
+        _version: u32,
         params: &TransportParameters,
     ) -> Box<dyn Session> {
         Box::new(NoiseConfig::start_session(&self, Side::Server, params))
@@ -108,9 +108,9 @@ impl ServerConfig for NoiseConfig {
 
     fn initial_keys(
         &self,
-        version: u32,
-        dst_cid: &ConnectionId,
-        side: Side,
+        _version: u32,
+        _dst_cid: &ConnectionId,
+        _side: Side,
     ) -> Result<Keys, quinn_proto::crypto::UnsupportedVersion> {
         Ok(Keys {
             header: header_keypair(),
@@ -121,7 +121,7 @@ impl ServerConfig for NoiseConfig {
         })
     }
 
-    fn retry_tag(&self, version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
+    fn retry_tag(&self, _version: u32, orig_dst_cid: &ConnectionId, packet: &[u8]) -> [u8; 16] {
         let mut pseudo_packet = Vec::with_capacity(packet.len() + orig_dst_cid.len() + 1);
         pseudo_packet.push(orig_dst_cid.len() as u8);
         pseudo_packet.extend_from_slice(orig_dst_cid);
