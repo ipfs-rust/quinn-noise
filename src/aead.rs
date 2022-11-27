@@ -5,10 +5,12 @@ use chacha20poly1305::{
 };
 use quinn_proto::crypto::{CryptoError, HeaderKey, KeyPair, PacketKey};
 
-pub const HEADER_KEYPAIR: KeyPair<PlaintextHeaderKey> = KeyPair {
-    local: PlaintextHeaderKey,
-    remote: PlaintextHeaderKey,
-};
+pub fn header_keypair() -> KeyPair<Box<dyn HeaderKey>> {
+    KeyPair {
+        local: Box::new(PlaintextHeaderKey),
+        remote: Box::new(PlaintextHeaderKey),
+    }
+}
 
 #[derive(Clone)]
 pub struct ChaCha8PacketKey(ChaCha8Poly1305);
